@@ -1,0 +1,34 @@
+# Core Framework
+fastapi
+uvicorn[standard]
+python-multipart
+pydantic
+python-dotenv
+
+# Database & Storage
+supabase
+httpx
+
+# Image Processing
+Pillow>=10.0.0
+opencv-python
+numpy
+
+# ML Pipeline
+onnxruntime
+sahi
+coloredlogs
+flatbuffers
+
+# File Handling
+aiofiles
+
+# Export Formats
+pandas
+
+# Utilities
+tqdm
+
+# Additional dependencies for YOLOX pipeline
+python-jose[cryptography]
+pydantic-settings 
