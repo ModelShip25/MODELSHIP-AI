@@ -5,10 +5,67 @@ from pydantic import BaseModel, Field, validator
 
 class BoundingBox(BaseModel):
     """Base bounding box schema with absolute coordinates."""
-    x: float = Field(..., description="Left coordinate in pixels", ge=0)
-    y: float = Field(..., description="Top coordinate in pixels", ge=0) 
-    width: float = Field(..., description="Width in pixels", gt=0)
-    height: float = Field(..., description="Height in pixels", gt=0)
+    x_min: float = Field(..., description="Left coordinate in pixels", ge=0)
+    y_min: float = Field(..., description="Top coordinate in pixels", ge=0) 
+    x_max: float = Field(..., description="Right coordinate in pixels", gt=0)
+    y_max: float = Field(..., description="Bottom coordinate in pixels", gt=0)
+    
+    @property
+    def width(self) -> float:
+        """Calculate width from coordinates."""
+        return self.x_max - self.x_min
+    
+    @property
+    def height(self) -> float:
+        """Calculate height from coordinates."""
+        return self.y_max - self.y_min
+    
+    @property
+    def area(self) -> float:
+        """Calculate area from coordinates."""
+        return self.width * self.height
+    
+    @property
+    def center_x(self) -> float:
+        """Calculate center X coordinate."""
+        return (self.x_min + self.x_max) / 2
+    
+    @property
+    def center_y(self) -> float:
+        """Calculate center Y coordinate."""
+        return (self.y_min + self.y_max) / 2
+    
+    @classmethod
+    def from_xywh(cls, x: float, y: float, width: float, height: float) -> "BoundingBox":
+        """Create BoundingBox from x, y, width, height format."""
+        return cls(
+            x_min=x,
+            y_min=y,
+            x_max=x + width,
+            y_max=y + height
+        )
+    
+    def to_xywh(self) -> tuple[float, float, float, float]:
+        """Convert to x, y, width, height format."""
+        return (self.x_min, self.y_min, self.width, self.height)
+    
+    def to_xyxy(self) -> tuple[float, float, float, float]:
+        """Convert to x_min, y_min, x_max, y_max format."""
+        return (self.x_min, self.y_min, self.x_max, self.y_max)
+    
+    @validator("x_max", always=True)
+    def validate_x_max(cls, v, values):
+        """Ensure x_max > x_min."""
+        if "x_min" in values and v <= values["x_min"]:
+            raise ValueError("x_max must be greater than x_min")
+        return v
+    
+    @validator("y_max", always=True)
+    def validate_y_max(cls, v, values):
+        """Ensure y_max > y_min."""
+        if "y_min" in values and v <= values["y_min"]:
+            raise ValueError("y_max must be greater than y_min")
+        return v
 
 
 class NormalizedBoundingBox(BaseModel):
@@ -69,6 +126,25 @@ class COCOAnnotation(BaseModel):
         if v[2] <= 0 or v[3] <= 0:
             raise ValueError("COCO bbox width and height must be positive")
         return v
+
+    @classmethod
+    def from_annotation(cls, ann: Annotation, annotation_id: int, category_id: int) -> "COCOAnnotation":
+        """Convert from base Annotation to COCO format."""
+        # Convert from x_min, y_min, x_max, y_max to x, y, width, height
+        bbox = [
+            ann.bbox.x_min,  # x
+            ann.bbox.y_min,  # y
+            ann.bbox.width,  # width
+            ann.bbox.height  # height
+        ]
+        
+        return cls(
+            id=annotation_id,
+            image_id=int(ann.image_id),  # COCO requires int IDs
+            category_id=category_id,
+            bbox=bbox,
+            area=ann.area
+        )
 
 
 class AnnotationResponse(BaseModel):

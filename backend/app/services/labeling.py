@@ -6,7 +6,7 @@ from datetime import datetime
 
 from ..pipeline.detector import YOLOXDetector
 from ..pipeline.sahi_wrapper import SAHIWrapper, SliceConfig
-from ..pipeline.config import ModelConfig
+from ..pipeline.config import config
 from ..storage.image_store import ImageStore
 from ..models.annotation import Annotation, BoundingBox
 from ..core.utils import create_success_response, create_error_response
@@ -25,7 +25,7 @@ class LabelingService:
     def __init__(self):
         """Initialize labeling service with YOLOX detector and SAHI predictor."""
         try:
-            self.config = ModelConfig()
+            self.config = config
             self.detector = YOLOXDetector(
                 model_path=self.config.model_path,
                 conf_thresh=self.config.CONF_THRESH,
@@ -80,7 +80,7 @@ class LabelingService:
 
             # Update confidence threshold if provided
             if confidence_threshold is not None:
-                self.detector.confidence_threshold = confidence_threshold
+                self.detector.conf_thresh = confidence_threshold
 
             annotations = []
             processing_stats = {

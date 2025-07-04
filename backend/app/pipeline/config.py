@@ -2,7 +2,8 @@
 import os
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
-from pydantic import BaseSettings, Field
+from pydantic import Field
+from pydantic_settings import BaseSettings
 import json
 import logging
 
@@ -90,6 +91,7 @@ class ModelConfig(BaseSettings):
         env_prefix = "MODELSHIP_"
         env_file = ".env"
         case_sensitive = True
+        extra = "ignore"
     
     def __init__(self, **kwargs):
         super().__init__(**kwargs)

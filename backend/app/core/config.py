@@ -29,6 +29,8 @@ class Config:
     SUPABASE_URL: Optional[str] = os.getenv("SUPABASE_URL")
     SUPABASE_KEY: Optional[str] = os.getenv("SUPABASE_KEY") 
     SUPABASE_BUCKET: str = os.getenv("SUPABASE_BUCKET", "modelship-images")
+    SUPABASE_PREVIEW_BUCKET: str = os.getenv("SUPABASE_PREVIEW_BUCKET", "modelship-previews")
+    SUPABASE_EXPORT_BUCKET: str = os.getenv("SUPABASE_EXPORT_BUCKET", "modelship-exports")
     
     # Model & Pipeline Settings
     MODEL_PATH: str = os.getenv("MODEL_PATH", "models/yolox_s.onnx")
@@ -40,10 +42,15 @@ class Config:
     SLICE_WIDTH: int = int(os.getenv("SLICE_WIDTH", "640"))
     OVERLAP_HEIGHT_RATIO: float = float(os.getenv("OVERLAP_HEIGHT_RATIO", "0.2"))
     OVERLAP_WIDTH_RATIO: float = float(os.getenv("OVERLAP_WIDTH_RATIO", "0.2"))
+    AUTO_SLICE_RESOLUTION: bool = os.getenv("AUTO_SLICE_RESOLUTION", "true").lower() == "true"
     
     # Security
     SECRET_KEY: str = os.getenv("SECRET_KEY", "dev-secret-change-in-production")
     CORS_ORIGINS: List[str] = os.getenv("CORS_ORIGINS", "*").split(",")
+    
+    # Logging Settings
+    LOG_LEVEL: str = os.getenv("LOG_LEVEL", "INFO")
+    LOG_FORMAT: str = os.getenv("LOG_FORMAT", "%(asctime)s - %(name)s - %(levelname)s - %(message)s")
     
     @classmethod
     def ensure_directories(cls) -> None:

@@ -135,10 +135,10 @@ class SAHIWrapper:
             for i, pred in enumerate(merged_predictions):
                 bbox = pred.bbox.to_xyxy()
                 bbox_obj = BoundingBox(
-                    x=bbox[0],
-                    y=bbox[1], 
-                    width=bbox[2] - bbox[0],
-                    height=bbox[3] - bbox[1]
+                    x_min=bbox[0],
+                    y_min=bbox[1], 
+                    x_max=bbox[2],
+                    y_max=bbox[3]
                 )
                 
                 annotation = Annotation(
@@ -148,7 +148,7 @@ class SAHIWrapper:
                     class_name=pred.category_name,
                     confidence=pred.score,
                     bbox=bbox_obj,
-                    area=bbox_obj.width * bbox_obj.height,
+                    area=(bbox_obj.x_max - bbox_obj.x_min) * (bbox_obj.y_max - bbox_obj.y_min),
                     source="sahi_yolox"
                 )
                 annotations.append(annotation)

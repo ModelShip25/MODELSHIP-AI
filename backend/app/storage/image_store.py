@@ -3,18 +3,20 @@ import os
 import uuid
 from pathlib import Path
 import logging
-from typing import Dict, List, Optional, BinaryIO, Union
+from typing import Dict, List, Optional, BinaryIO, Union, Any, cast
 from datetime import datetime
 import aiofiles
 import asyncio
 from PIL import Image
 import io
 import mimetypes
-from supabase import create_client, Client
 from pydantic import BaseModel
+from fastapi import UploadFile
+from postgrest import APIResponse
 
 from app.core.config import settings
-from app.models.annotation import Annotation
+from app.core.supabase_client import supabase_client
+from app.models.annotation import Annotation, BoundingBox
 
 logger = logging.getLogger(__name__)
 
@@ -44,10 +46,7 @@ class ImageStore:
     def __init__(self):
         """Initialize Supabase client and storage buckets."""
         try:
-            self.supabase: Client = create_client(
-                settings.SUPABASE_URL,
-                settings.SUPABASE_KEY
-            )
+            self.supabase = supabase_client
             
             # Storage bucket names
             self.IMAGES_BUCKET = "images"
@@ -72,13 +71,13 @@ class ImageStore:
             if self.IMAGES_BUCKET not in existing:
                 self.supabase.storage.create_bucket(
                     self.IMAGES_BUCKET,
-                    public=False
+                    options={"public": False}
                 )
             
             if self.PREVIEWS_BUCKET not in existing:
                 self.supabase.storage.create_bucket(
                     self.PREVIEWS_BUCKET,
-                    public=True  # Previews can be public for easy display
+                    options={"public": True}  # Previews can be public for easy display
                 )
                 
         except Exception as e:
@@ -115,29 +114,25 @@ class ImageStore:
             
             # Read image for metadata
             image_data = file.read()
-            file.seek(0)  # Reset for upload
             
             with Image.open(io.BytesIO(image_data)) as img:
                 width, height = img.size
             
             # Upload to Supabase
-            result = self.supabase.storage \
-                .from_(self.IMAGES_BUCKET) \
-                .upload(
-                    storage_name,
-                    file,
-                    file_options={"content-type": content_type}
-                )
+            bucket = self.supabase.storage.from_(self.IMAGES_BUCKET)
+            result = bucket.upload(
+                path=storage_name,
+                file=image_data,
+                file_options={"contentType": content_type}
+            )
             
-            if not result or "error" in result:
+            if isinstance(result, dict) and result.get("error"):
                 raise ImageStoreError(
                     f"Upload failed: {result.get('error', 'Unknown error')}"
                 )
             
             # Get storage path
-            storage_path = self.supabase.storage \
-                .from_(self.IMAGES_BUCKET) \
-                .get_public_url(storage_name)
+            storage_path = bucket.get_public_url(storage_name)
             
             # Create metadata
             metadata = ImageMetadata(
@@ -153,7 +148,7 @@ class ImageStore:
             )
             
             # Store metadata in database
-            self.supabase.table("images").insert({
+            response = self.supabase.table("images").insert({
                 "id": metadata.id,
                 "filename": metadata.filename,
                 "content_type": metadata.content_type,
@@ -324,16 +319,21 @@ class ImageStore:
             annotations = []
             for data in result.data:
                 bbox_data = data["bbox"]
+                ann_id = str(uuid.uuid4())  # Generate ID if not present
                 ann = Annotation(
+                    id=ann_id,
+                    image_id=image_id,
+                    class_name=data["class_name"],
+                    class_id=data["class_id"],
+                    confidence=data["confidence"],
                     bbox=BoundingBox(
                         x_min=bbox_data["x_min"],
                         y_min=bbox_data["y_min"],
                         x_max=bbox_data["x_max"],
                         y_max=bbox_data["y_max"]
                     ),
-                    class_name=data["class_name"],
-                    class_id=data["class_id"],
-                    confidence=data["confidence"]
+                    area=float(bbox_data["x_max"] * bbox_data["y_max"] - bbox_data["x_min"] * bbox_data["y_min"]),
+                    source="yolox"
                 )
                 annotations.append(ann)
             
@@ -395,10 +395,14 @@ class ImageStore:
             ImageMetadata with storage details
         """
         try:
+            # Read file content first
+            content = await file.read()
+            file_obj = io.BytesIO(content)
+            
             # Store the image using the existing method
             metadata = await self.store_image(
-                file=file.file,
-                filename=file.filename,
+                file=file_obj,
+                filename=file.filename if file.filename else "untitled.jpg",
                 content_type=file.content_type,
                 user_id=user_id
             )

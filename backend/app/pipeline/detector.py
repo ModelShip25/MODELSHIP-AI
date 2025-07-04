@@ -7,7 +7,7 @@ import logging
 from typing import Dict, List, Optional, Tuple, Union
 import time
 
-from .config import ModelConfig
+from .config import config
 
 logger = logging.getLogger(__name__)
 
@@ -93,6 +93,10 @@ class YOLOXDetector:
                 [self.output_name],
                 {self.input_name: input_data}
             )[0]
+            
+            # Ensure outputs is a numpy array
+            if not isinstance(outputs, np.ndarray):
+                outputs = np.array(outputs)
             
             # Postprocess detections
             predictions = self._postprocess(
@@ -194,9 +198,7 @@ class YOLOXDetector:
                 "bbox": boxes[idx].tolist(),
                 "confidence": float(confidences[idx]),
                 "class_id": int(class_ids[idx]),
-                "class_name": ModelConfig.CLASSES[class_ids[idx]]
-                if hasattr(ModelConfig, 'CLASSES')
-                else str(class_ids[idx])
+                "class_name": config.get_class_name(class_ids[idx])
             })
         
         return predictions

@@ -184,20 +184,43 @@ class ExportService:
         """Create YOLO format export."""
         try:
             export_path = Path(self._jobs[job_id]["export_path"])
-            labels_dir = export_path / "labels"
+            labels_dir = export_path.joinpath("labels")
             labels_dir.mkdir(exist_ok=True)
             
             if include_images:
-                images_dir = export_path / "images"
+                images_dir = export_path.joinpath("images")
                 images_dir.mkdir(exist_ok=True)
             
             # Create YOLO annotations
             for image_id, image_anns in annotations.items():
                 # Convert to YOLO format
-                yolo_annotations = [
-                    YOLOAnnotation.from_annotation(ann)
-                    for ann in image_anns
-                ]
+                yolo_annotations = []
+                for ann in image_anns:
+                    # Get image metadata to normalize coordinates
+                    image_metadata = await self.image_store.get_image_metadata(image_id)
+                    img_width = image_metadata.width
+                    img_height = image_metadata.height
+                    
+                    # Convert to normalized YOLO format
+                    x_center = (ann.bbox.x_min + ann.bbox.x_max) / 2 / img_width
+                    y_center = (ann.bbox.y_min + ann.bbox.y_max) / 2 / img_height
+                    width = (ann.bbox.x_max - ann.bbox.x_min) / img_width
+                    height = (ann.bbox.y_max - ann.bbox.y_min) / img_height
+                    
+                    from ..models.annotation import NormalizedBoundingBox
+                    norm_bbox = NormalizedBoundingBox(
+                        x_center=x_center,
+                        y_center=y_center,
+                        width=width,
+                        height=height
+                    )
+                    
+                    yolo_ann = YOLOAnnotation(
+                        class_id=ann.class_id,
+                        bbox=norm_bbox,
+                        confidence=ann.confidence
+                    )
+                    yolo_annotations.append(yolo_ann)
                 
                 # Write label file
                 label_file = labels_dir / f"{image_id}.txt"
@@ -210,7 +233,7 @@ class ExportService:
                     image_path = await self.image_store.get_image_path(image_id)
                     shutil.copy2(
                         image_path,
-                        images_dir / f"{image_id}{Path(image_path).suffix}"
+                        images_dir.joinpath(Path(image_path).name)
                     )
             
             # Create classes.txt
@@ -219,11 +242,11 @@ class ExportService:
                 for anns in annotations.values()
                 for ann in anns
             ))
-            with open(export_path / "classes.txt", "w") as f:
+            with open(export_path.joinpath("classes.txt"), "w") as f:
                 f.write("\n".join(classes))
             
             # Create README
-            with open(export_path / "README.txt", "w") as f:
+            with open(export_path.joinpath("README.txt"), "w") as f:
                 f.write("YOLO Format Dataset\n\n")
                 f.write(f"Total Images: {len(image_ids)}\n")
                 f.write(f"Classes: {len(classes)}\n")
@@ -234,7 +257,7 @@ class ExportService:
                 f.write("- classes.txt: List of class names\n")
             
             # Create zip file
-            zip_path = export_path / "export.zip"
+            zip_path = export_path.joinpath("export.zip")
             with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
                 for file in export_path.rglob("*"):
                     if file != zip_path and file.is_file():
@@ -262,7 +285,7 @@ class ExportService:
             export_path = Path(self._jobs[job_id]["export_path"])
             
             if include_images:
-                images_dir = export_path / "images"
+                images_dir = export_path.joinpath("images")
                 images_dir.mkdir(exist_ok=True)
             
             # Prepare COCO format data
@@ -303,7 +326,7 @@ class ExportService:
                     # Copy image file
                     shutil.copy2(
                         image_path,
-                        images_dir / Path(image_path).name
+                        images_dir.joinpath(Path(image_path).name)
                     )
                 
                 # Convert annotations to COCO format
@@ -317,15 +340,15 @@ class ExportService:
                     ann_id += 1
             
             # Write COCO JSON
-            with open(export_path / "annotations.json", "w") as f:
+            with open(export_path.joinpath("annotations.json"), "w") as f:
                 json.dump(coco_data, f, indent=2)
             
             # Create zip if including images
             if include_images:
-                zip_path = export_path / "export.zip"
+                zip_path = export_path.joinpath("export.zip")
                 with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
                     zf.write(
-                        export_path / "annotations.json",
+                        export_path.joinpath("annotations.json"),
                         "annotations.json"
                     )
                     for image in images_dir.iterdir():
@@ -339,7 +362,7 @@ class ExportService:
                 }
             
             return {
-                "file_path": str(export_path / "annotations.json"),
+                "file_path": str(export_path.joinpath("annotations.json")),
                 "filename": f"coco_export_{job_id}.json",
                 "media_type": "application/json",
                 "ready": True
@@ -360,11 +383,11 @@ class ExportService:
             export_path = Path(self._jobs[job_id]["export_path"])
             
             if include_images:
-                images_dir = export_path / "images"
+                images_dir = export_path.joinpath("images")
                 images_dir.mkdir(exist_ok=True)
             
             # Create CSV file
-            csv_path = export_path / "annotations.csv"
+            csv_path = export_path.joinpath("annotations.csv")
             with open(csv_path, "w", newline="") as f:
                 writer = csv.writer(f)
                 writer.writerow([
@@ -387,7 +410,7 @@ class ExportService:
                         # Copy image file
                         shutil.copy2(
                             image_path,
-                            images_dir / image_name
+                            images_dir.joinpath(image_name)
                         )
                     
                     # Write annotations
@@ -406,7 +429,7 @@ class ExportService:
             
             # Create zip if including images
             if include_images:
-                zip_path = export_path / "export.zip"
+                zip_path = export_path.joinpath("export.zip")
                 with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
                     zf.write(csv_path, "annotations.csv")
                     for image in images_dir.iterdir():
@@ -440,6 +463,8 @@ class ExportService:
         """Create complete ZIP export with all formats."""
         try:
             export_path = Path(self._jobs[job_id]["export_path"])
+            temp_dir = export_path.joinpath("temp")
+            temp_dir.mkdir(exist_ok=True)
             
             # Create all formats
             await self._create_yolo_export(
@@ -453,7 +478,7 @@ class ExportService:
             )
             
             if include_previews:
-                previews_dir = export_path / "previews"
+                previews_dir = export_path.joinpath("previews")
                 previews_dir.mkdir(exist_ok=True)
                 
                 for image_id in image_ids:
@@ -462,13 +487,13 @@ class ExportService:
                         if preview_path:
                             shutil.copy2(
                                 preview_path,
-                                previews_dir / f"{image_id}_preview.png"
+                                previews_dir.joinpath(f"{image_id}_preview.png")
                             )
                     except Exception as e:
                         logger.warning(f"Failed to copy preview for {image_id}: {str(e)}")
             
             # Create final zip with everything
-            zip_path = export_path / "complete_export.zip"
+            zip_path = export_path.joinpath("complete_export.zip")
             with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
                 for file in export_path.rglob("*"):
                     if file != zip_path and file.is_file():
