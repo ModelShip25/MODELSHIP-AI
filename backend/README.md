@@ -229,4 +229,4 @@ docker run -p 8000:8000 modelship-backend
 
 ## 📝 License
 
-MIT License - see LICENSE file for details 
+MIT License - see LICENSE file for details
