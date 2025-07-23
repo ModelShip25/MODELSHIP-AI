@@ -332,7 +332,10 @@ class ImageStore:
                         x_max=bbox_data["x_max"],
                         y_max=bbox_data["y_max"]
                     ),
-                    area=float(bbox_data["x_max"] * bbox_data["y_max"] - bbox_data["x_min"] * bbox_data["y_min"]),
+                    area=float(
+                        (bbox_data["x_max"] - bbox_data["x_min"]) *
+                        (bbox_data["y_max"] - bbox_data["y_min"])
+                    ),
                     source="yolox"
                 )
                 annotations.append(ann)
