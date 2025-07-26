@@ -208,3 +208,150 @@ class ImageStore:
                 
         except Exception as e:
             raise ImageStoreError(f"Failed to store annotations: {str(e)}")
+<<<<<<< HEAD
+=======
+    
+    async def get_annotations(self, image_id: str) -> List[Annotation]:
+        """Get annotations for an image."""
+        try:
+            result = self.supabase.table("annotations") \
+                .select("*") \
+                .eq("image_id", image_id) \
+                .execute()
+            
+            if not result.data:
+                return []
+            
+            # Convert to Annotation objects
+            annotations = []
+            for data in result.data:
+                bbox_data = data["bbox"]
+                ann_id = str(uuid.uuid4())  # Generate ID if not present
+                ann = Annotation(
+                    id=ann_id,
+                    image_id=image_id,
+                    class_name=data["class_name"],
+                    class_id=data["class_id"],
+                    confidence=data["confidence"],
+                    bbox=BoundingBox(
+                        x_min=bbox_data["x_min"],
+                        y_min=bbox_data["y_min"],
+                        x_max=bbox_data["x_max"],
+                        y_max=bbox_data["y_max"]
+                    ),
+                    area=float(
+                        (bbox_data["x_max"] - bbox_data["x_min"]) *
+                        (bbox_data["y_max"] - bbox_data["y_min"])
+                    ),
+                    source="yolox"
+                )
+                annotations.append(ann)
+            
+            return annotations
+            
+        except Exception as e:
+            raise ImageStoreError(f"Failed to get annotations: {str(e)}")
+    
+    async def delete_image(self, image_id: str):
+        """Delete an image and its associated data."""
+        try:
+            # Get image info
+            metadata = await self.get_image_metadata(image_id)
+            
+            # Delete from storage
+            filename = Path(metadata.storage_path).name
+            self.supabase.storage \
+                .from_(self.IMAGES_BUCKET) \
+                .remove([filename])
+            
+            # Delete preview if exists
+            if metadata.preview_path:
+                preview_name = Path(metadata.preview_path).name
+                self.supabase.storage \
+                    .from_(self.PREVIEWS_BUCKET) \
+                    .remove([preview_name])
+            
+            # Delete from database (cascade to annotations)
+            self.supabase.table("images") \
+                .delete() \
+                .eq("id", image_id) \
+                .execute()
+            
+        except Exception as e:
+            raise ImageStoreError(f"Failed to delete image: {str(e)}")
+    
+    async def cleanup_temp(self):
+        """Clean up temporary files."""
+        try:
+            for file in self.temp_dir.iterdir():
+                if file.is_file():
+                    file.unlink()
+        except Exception as e:
+            logger.error(f"Failed to cleanup temp files: {str(e)}")
+
+    async def save_image(
+        self,
+        file: "UploadFile",
+        user_id: Optional[str] = None
+    ) -> ImageMetadata:
+        """
+        Save an uploaded image file (wrapper for store_image).
+        
+        Args:
+            file: FastAPI UploadFile object
+            user_id: Optional user ID for ownership
+            
+        Returns:
+            ImageMetadata with storage details
+        """
+        try:
+            # Read file content first
+            content = await file.read()
+            file_obj = io.BytesIO(content)
+            
+            # Store the image using the existing method
+            metadata = await self.store_image(
+                file=file_obj,
+                filename=file.filename if file.filename else "untitled.jpg",
+                content_type=file.content_type,
+                user_id=user_id
+            )
+            
+            return metadata
+            
+        except Exception as e:
+            raise ImageStoreError(f"Failed to save image: {str(e)}")
+
+    async def get_storage_info(self) -> Dict:
+        """Get storage service information and statistics."""
+        try:
+            # Get bucket info (simplified for MVP)
+            return {
+                "service": "supabase",
+                "status": "operational",
+                "buckets": [self.IMAGES_BUCKET, self.PREVIEWS_BUCKET],
+                "temp_directory": str(self.temp_dir)
+            }
+        except Exception as e:
+            raise ImageStoreError(f"Failed to get storage info: {str(e)}")
+
+    def get_storage_stats(self) -> Dict:
+        """Get storage statistics (synchronous version for compatibility)."""
+        try:
+            return {
+                "total_images": 0,  # Would query database in production
+                "total_size": 0,
+                "service": "supabase",
+                "status": "operational"
+            }
+        except Exception as e:
+            raise ImageStoreError(f"Failed to get storage stats: {str(e)}")
+
+    def image_exists(self, filename: str) -> bool:
+        """Check if an image exists (simplified for MVP)."""
+        try:
+            # In production, this would query the database
+            return False  # Placeholder implementation
+        except Exception as e:
+            raise ImageStoreError(f"Failed to check image existence: {str(e)}")
+>>>>>>> 2ced259340e3e167b468bd712cf7a750fb4e3567
