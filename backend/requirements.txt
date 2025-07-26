@@ -4,6 +4,7 @@ uvicorn[standard]
 python-multipart
 pydantic
 python-dotenv
+slowapi
 
 # Database & Storage
 supabase
@@ -16,7 +17,7 @@ numpy
 
 # ML Pipeline
 onnxruntime
-sahi
+sahi==0.11.21
 coloredlogs
 flatbuffers
 

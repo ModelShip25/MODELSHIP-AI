@@ -7,17 +7,17 @@ import logging
 from typing import Optional, Dict, Any, List, Union
 from supabase import create_client, Client
 from supabase.lib.client_options import ClientOptions
-from supabase.client import SyncClient
+from supabase.client import AsyncClient
 from app.core.config import settings
 
 logger = logging.getLogger(__name__)
 
 
-class MockSupabaseClient(SyncClient):
+class MockSupabaseClient(AsyncClient):
     """Mock Supabase client for development/testing when real credentials aren't available."""
     
     def __init__(self):
-        # Initialize with dummy values to satisfy SyncClient
+        # Initialize with dummy values to satisfy AsyncClient
         super().__init__(
             supabase_url="http://mock",
             supabase_key="mock",
@@ -137,7 +137,7 @@ class MockBucket:
         return {"path": path}
 
 
-def get_supabase_client() -> SyncClient:
+def get_supabase_client() -> AsyncClient:
     """Get Supabase client, using mock if real credentials aren't available."""
     try:
         # Check if we have real credentials

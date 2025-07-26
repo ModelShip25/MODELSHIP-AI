@@ -1,9 +1,13 @@
-# app/storage/image_store.py
+"""
+Service for storing and retrieving images using Supabase.
+Handles image validation, storage, and retrieval.
+"""
+
 import os
 import uuid
 from pathlib import Path
 import logging
-from typing import Dict, List, Optional, BinaryIO, Union, Any, cast
+from typing import Dict, List, Optional, BinaryIO, Union, Any, cast, Tuple
 from datetime import datetime
 import aiofiles
 import asyncio
@@ -11,8 +15,7 @@ from PIL import Image
 import io
 import mimetypes
 from pydantic import BaseModel
-from fastapi import UploadFile
-from postgrest import APIResponse
+from fastapi import UploadFile, HTTPException
 
 from app.core.config import settings
 from app.core.supabase_client import supabase_client
@@ -20,6 +23,10 @@ from app.models.annotation import Annotation, BoundingBox
 
 logger = logging.getLogger(__name__)
 
+# Constants
+MAX_FILE_SIZE = 10 * 1024 * 1024  # 10MB
+ALLOWED_MIME_TYPES = ['image/jpeg', 'image/png', 'image/webp']
+MAX_IMAGE_DIMENSION = 4096  # Maximum width or height
 
 class ImageMetadata(BaseModel):
     """Metadata for stored images."""
@@ -31,115 +38,125 @@ class ImageMetadata(BaseModel):
     height: int
     created_at: datetime
     storage_path: str
-    preview_path: Optional[str] = None
     user_id: Optional[str] = None
 
-
 class ImageStoreError(Exception):
-    """Custom exception for image storage errors."""
+    """Custom exception for image store operations."""
     pass
-
 
 class ImageStore:
     """Service for storing and retrieving images using Supabase."""
     
     def __init__(self):
-        """Initialize Supabase client and storage buckets."""
+        """Initialize Supabase client and storage bucket."""
         try:
             self.supabase = supabase_client
+            self.IMAGE_BUCKET = "images"
             
-            # Storage bucket names
-            self.IMAGES_BUCKET = "images"
-            self.PREVIEWS_BUCKET = "previews"
-            
-            # Local temp directory for processing
-            self.temp_dir = Path("temp")
-            self.temp_dir.mkdir(exist_ok=True)
-            
-            # Ensure buckets exist
-            self._ensure_buckets()
+            # Ensure bucket exists
+            asyncio.create_task(self._ensure_bucket())
             
         except Exception as e:
-            raise ImageStoreError(f"Failed to initialize storage: {str(e)}")
+            raise ImageStoreError(f"Failed to initialize image store: {str(e)}")
     
-    def _ensure_buckets(self):
-        """Ensure required storage buckets exist."""
+    async def _ensure_bucket(self):
+        """Ensure required storage bucket exists."""
         try:
-            buckets = self.supabase.storage.list_buckets()
-            existing = {b["name"] for b in buckets}
+            buckets = await self.supabase.storage.list_buckets()
+            bucket_names = [bucket.name for bucket in buckets]
             
-            if self.IMAGES_BUCKET not in existing:
-                self.supabase.storage.create_bucket(
-                    self.IMAGES_BUCKET,
-                    options={"public": False}
-                )
-            
-            if self.PREVIEWS_BUCKET not in existing:
-                self.supabase.storage.create_bucket(
-                    self.PREVIEWS_BUCKET,
-                    options={"public": True}  # Previews can be public for easy display
-                )
+            if self.IMAGE_BUCKET not in bucket_names:
+                await self.supabase.storage.create_bucket(self.IMAGE_BUCKET)
                 
         except Exception as e:
-            raise ImageStoreError(f"Failed to create buckets: {str(e)}")
+            raise ImageStoreError(f"Failed to ensure bucket: {str(e)}")
     
+    @staticmethod
+    async def _validate_image(file: UploadFile) -> Tuple[int, int, int]:
+        """Validate image file and return dimensions."""
+        # Check file size
+        file.file.seek(0, 2)  # Seek to end
+        size = file.file.tell()
+        file.file.seek(0)  # Reset position
+        
+        if size > MAX_FILE_SIZE:
+            raise HTTPException(
+                status_code=400,
+                detail=f"File too large. Maximum size is {MAX_FILE_SIZE/1024/1024}MB"
+            )
+        
+        # Check mime type
+        content_type = file.content_type or mimetypes.guess_type(file.filename or "")[0]
+        if not content_type or content_type not in ALLOWED_MIME_TYPES:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Invalid file type. Allowed types: {', '.join(ALLOWED_MIME_TYPES)}"
+            )
+        
+        # Check image dimensions
+        try:
+            img = Image.open(file.file)
+            width, height = img.size
+            if width > MAX_IMAGE_DIMENSION or height > MAX_IMAGE_DIMENSION:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Image dimensions too large. Maximum allowed is {MAX_IMAGE_DIMENSION}px"
+                )
+            file.file.seek(0)  # Reset position
+            return width, height, size
+        except Exception as e:
+            raise HTTPException(
+                status_code=400,
+                detail="Invalid image file"
+            )
+
     async def store_image(
         self,
-        file: BinaryIO,
-        filename: str,
-        content_type: Optional[str] = None,
+        file: UploadFile,
         user_id: Optional[str] = None
     ) -> ImageMetadata:
-        """
-        Store an image file in Supabase storage.
-        
-        Args:
-            file: File-like object containing image data
-            filename: Original filename
-            content_type: MIME type (detected if not provided)
-            user_id: Optional user ID for ownership
-            
-        Returns:
-            ImageMetadata with storage details
-        """
+        """Store an image file and its metadata."""
         try:
-            # Generate UUID for storage
+            # Validate image
+            width, height, size = await self._validate_image(file)
+            
+            # Generate unique ID and filename
             image_id = str(uuid.uuid4())
-            ext = Path(filename).suffix
-            storage_name = f"{image_id}{ext}"
+            filename = file.filename or f"{image_id}.jpg"
             
-            # Get content type if not provided
-            if not content_type:
-                content_type = mimetypes.guess_type(filename)[0] or "image/jpeg"
+            # Read file content
+            content = await file.read()
             
-            # Read image for metadata
-            image_data = file.read()
+            # Upload with retry
+            max_retries = 3
+            storage_path = None
             
-            with Image.open(io.BytesIO(image_data)) as img:
-                width, height = img.size
+            for attempt in range(max_retries):
+                try:
+                    result = await self.supabase.storage \
+                        .from_(self.IMAGE_BUCKET) \
+                        .upload(
+                            path=f"{image_id}/{filename}",
+                            file=content,
+                            file_options=None  # Let Supabase handle content type
+                        )
+                    storage_path = result.path if hasattr(result, 'path') else str(result)
+                    break
+                except Exception as e:
+                    if attempt == max_retries - 1:
+                        raise
+                    logger.warning(f"Upload attempt {attempt + 1} failed, retrying...")
+                    await asyncio.sleep(1)  # Wait before retry
             
-            # Upload to Supabase
-            bucket = self.supabase.storage.from_(self.IMAGES_BUCKET)
-            result = bucket.upload(
-                path=storage_name,
-                file=image_data,
-                file_options={"contentType": content_type}
-            )
-            
-            if isinstance(result, dict) and result.get("error"):
-                raise ImageStoreError(
-                    f"Upload failed: {result.get('error', 'Unknown error')}"
-                )
-            
-            # Get storage path
-            storage_path = bucket.get_public_url(storage_name)
+            if not storage_path:
+                raise ImageStoreError("Failed to get storage path from upload result")
             
             # Create metadata
             metadata = ImageMetadata(
                 id=image_id,
                 filename=filename,
-                content_type=content_type,
-                size=len(image_data),
+                content_type=file.content_type or "application/octet-stream",
+                size=size,
                 width=width,
                 height=height,
                 created_at=datetime.utcnow(),
@@ -148,129 +165,14 @@ class ImageStore:
             )
             
             # Store metadata in database
-            response = self.supabase.table("images").insert({
-                "id": metadata.id,
-                "filename": metadata.filename,
-                "content_type": metadata.content_type,
-                "size": metadata.size,
-                "width": metadata.width,
-                "height": metadata.height,
-                "storage_path": metadata.storage_path,
-                "user_id": metadata.user_id
-            }).execute()
+            await self.supabase.table("images") \
+                .insert(metadata.dict()) \
+                .execute()
             
             return metadata
             
         except Exception as e:
             raise ImageStoreError(f"Failed to store image: {str(e)}")
-    
-    async def get_image_path(self, image_id: str) -> str:
-        """Get the storage path for an image."""
-        try:
-            result = self.supabase.table("images") \
-                .select("storage_path") \
-                .eq("id", image_id) \
-                .single() \
-                .execute()
-            
-            if not result.data:
-                raise ImageStoreError(f"Image not found: {image_id}")
-            
-            return result.data["storage_path"]
-            
-        except Exception as e:
-            raise ImageStoreError(f"Failed to get image path: {str(e)}")
-    
-    async def get_image_metadata(self, image_id: str) -> ImageMetadata:
-        """Get metadata for an image."""
-        try:
-            result = self.supabase.table("images") \
-                .select("*") \
-                .eq("id", image_id) \
-                .single() \
-                .execute()
-            
-            if not result.data:
-                raise ImageStoreError(f"Image not found: {image_id}")
-            
-            return ImageMetadata(**result.data)
-            
-        except Exception as e:
-            raise ImageStoreError(f"Failed to get metadata: {str(e)}")
-    
-    async def store_preview(
-        self,
-        image_id: str,
-        preview_file: Union[BinaryIO, Path],
-        content_type: str = "image/png"
-    ) -> str:
-        """
-        Store a preview image.
-        
-        Args:
-            image_id: ID of the original image
-            preview_file: Preview image file or path
-            content_type: MIME type of preview
-            
-        Returns:
-            Public URL of stored preview
-        """
-        try:
-            preview_name = f"{image_id}_preview.png"
-            
-            # Handle Path input
-            if isinstance(preview_file, Path):
-                preview_data = preview_file.read_bytes()
-            else:
-                preview_data = preview_file.read()
-            
-            # Upload preview
-            result = self.supabase.storage \
-                .from_(self.PREVIEWS_BUCKET) \
-                .upload(
-                    preview_name,
-                    preview_data,
-                    file_options={"content-type": content_type}
-                )
-            
-            if not result or "error" in result:
-                raise ImageStoreError(
-                    f"Preview upload failed: {result.get('error', 'Unknown error')}"
-                )
-            
-            # Get public URL
-            preview_url = self.supabase.storage \
-                .from_(self.PREVIEWS_BUCKET) \
-                .get_public_url(preview_name)
-            
-            # Update image record
-            self.supabase.table("images") \
-                .update({"preview_path": preview_url}) \
-                .eq("id", image_id) \
-                .execute()
-            
-            return preview_url
-            
-        except Exception as e:
-            raise ImageStoreError(f"Failed to store preview: {str(e)}")
-    
-    async def get_preview_path(self, image_id: str) -> Optional[str]:
-        """Get the public URL for a preview image if it exists."""
-        try:
-            result = self.supabase.table("images") \
-                .select("preview_path") \
-                .eq("id", image_id) \
-                .single() \
-                .execute()
-            
-            if not result.data:
-                return None
-            
-            return result.data.get("preview_path")
-            
-        except Exception as e:
-            logger.error(f"Failed to get preview path: {str(e)}")
-            return None
     
     async def store_annotations(
         self,
@@ -283,8 +185,8 @@ class ImageStore:
             annotation_data = [
                 {
                     "image_id": image_id,
-                    "class_name": ann.class_name,
                     "class_id": ann.class_id,
+                    "class_name": ann.class_name,
                     "confidence": ann.confidence,
                     "bbox": {
                         "x_min": ann.bbox.x_min,
@@ -296,151 +198,13 @@ class ImageStore:
                 for ann in annotations
             ]
             
-            # Store in database
-            self.supabase.table("annotations") \
-                .insert(annotation_data) \
-                .execute()
-            
+            # Insert annotations in batches of 100
+            batch_size = 100
+            for i in range(0, len(annotation_data), batch_size):
+                batch = annotation_data[i:i + batch_size]
+                await self.supabase.table("annotations") \
+                    .insert(batch) \
+                    .execute()
+                
         except Exception as e:
             raise ImageStoreError(f"Failed to store annotations: {str(e)}")
-    
-    async def get_annotations(self, image_id: str) -> List[Annotation]:
-        """Get annotations for an image."""
-        try:
-            result = self.supabase.table("annotations") \
-                .select("*") \
-                .eq("image_id", image_id) \
-                .execute()
-            
-            if not result.data:
-                return []
-            
-            # Convert to Annotation objects
-            annotations = []
-            for data in result.data:
-                bbox_data = data["bbox"]
-                ann_id = str(uuid.uuid4())  # Generate ID if not present
-                ann = Annotation(
-                    id=ann_id,
-                    image_id=image_id,
-                    class_name=data["class_name"],
-                    class_id=data["class_id"],
-                    confidence=data["confidence"],
-                    bbox=BoundingBox(
-                        x_min=bbox_data["x_min"],
-                        y_min=bbox_data["y_min"],
-                        x_max=bbox_data["x_max"],
-                        y_max=bbox_data["y_max"]
-                    ),
-                    area=float(bbox_data["x_max"] * bbox_data["y_max"] - bbox_data["x_min"] * bbox_data["y_min"]),
-                    source="yolox"
-                )
-                annotations.append(ann)
-            
-            return annotations
-            
-        except Exception as e:
-            raise ImageStoreError(f"Failed to get annotations: {str(e)}")
-    
-    async def delete_image(self, image_id: str):
-        """Delete an image and its associated data."""
-        try:
-            # Get image info
-            metadata = await self.get_image_metadata(image_id)
-            
-            # Delete from storage
-            filename = Path(metadata.storage_path).name
-            self.supabase.storage \
-                .from_(self.IMAGES_BUCKET) \
-                .remove([filename])
-            
-            # Delete preview if exists
-            if metadata.preview_path:
-                preview_name = Path(metadata.preview_path).name
-                self.supabase.storage \
-                    .from_(self.PREVIEWS_BUCKET) \
-                    .remove([preview_name])
-            
-            # Delete from database (cascade to annotations)
-            self.supabase.table("images") \
-                .delete() \
-                .eq("id", image_id) \
-                .execute()
-            
-        except Exception as e:
-            raise ImageStoreError(f"Failed to delete image: {str(e)}")
-    
-    async def cleanup_temp(self):
-        """Clean up temporary files."""
-        try:
-            for file in self.temp_dir.iterdir():
-                if file.is_file():
-                    file.unlink()
-        except Exception as e:
-            logger.error(f"Failed to cleanup temp files: {str(e)}")
-
-    async def save_image(
-        self,
-        file: "UploadFile",
-        user_id: Optional[str] = None
-    ) -> ImageMetadata:
-        """
-        Save an uploaded image file (wrapper for store_image).
-        
-        Args:
-            file: FastAPI UploadFile object
-            user_id: Optional user ID for ownership
-            
-        Returns:
-            ImageMetadata with storage details
-        """
-        try:
-            # Read file content first
-            content = await file.read()
-            file_obj = io.BytesIO(content)
-            
-            # Store the image using the existing method
-            metadata = await self.store_image(
-                file=file_obj,
-                filename=file.filename if file.filename else "untitled.jpg",
-                content_type=file.content_type,
-                user_id=user_id
-            )
-            
-            return metadata
-            
-        except Exception as e:
-            raise ImageStoreError(f"Failed to save image: {str(e)}")
-
-    async def get_storage_info(self) -> Dict:
-        """Get storage service information and statistics."""
-        try:
-            # Get bucket info (simplified for MVP)
-            return {
-                "service": "supabase",
-                "status": "operational",
-                "buckets": [self.IMAGES_BUCKET, self.PREVIEWS_BUCKET],
-                "temp_directory": str(self.temp_dir)
-            }
-        except Exception as e:
-            raise ImageStoreError(f"Failed to get storage info: {str(e)}")
-
-    def get_storage_stats(self) -> Dict:
-        """Get storage statistics (synchronous version for compatibility)."""
-        try:
-            return {
-                "total_images": 0,  # Would query database in production
-                "total_size": 0,
-                "service": "supabase",
-                "status": "operational"
-            }
-        except Exception as e:
-            raise ImageStoreError(f"Failed to get storage stats: {str(e)}")
-
-    def image_exists(self, filename: str) -> bool:
-        """Check if an image exists (simplified for MVP)."""
-        try:
-            # In production, this would query the database
-            return False  # Placeholder implementation
-        except Exception as e:
-            raise ImageStoreError(f"Failed to check image existence: {str(e)}")
